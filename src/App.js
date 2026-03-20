@@ -256,7 +256,7 @@ function LoginScreen({ onLogin }) {
   );
 }
 
-function DeviceScreen({ onLogout }) {
+function DeviceScreen({ onLogout, isAdmin, onAdmin }) {
   const [relayOn, setRelayOn] = useState(false);
   const [connected, setConnected] = useState(false);
   const [time, setTime] = useState(new Date());
@@ -457,22 +457,38 @@ function DeviceScreen({ onLogout }) {
   return (
     <div style={styles.app}>
       <div style={styles.header}>
-        <div>
-          <div style={styles.logo}>YUMA IoT</div>
-          <div style={styles.subtitle}>Intelligent Systems Flow</div>
+    	  <div>
+      	    <div style={styles.logo}>YUMA IoT</div>
+            <div style={styles.subtitle}>Intelligent Systems Flow</div>
+    	  </div>
+    	  <div style={{ display: 'flex', gap: '8px' }}>
+      	    {isAdmin && (
+              <button onClick={onAdmin} style={{
+                background: 'none',
+                border: `2px solid ${COLORS.green}`,
+                color: COLORS.green,
+                padding: '6px 12px',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontSize: '13px',
+          	fontWeight: 'bold',
+              }}>
+          	Admin
+              </button>
+            )}
+      	    <button onClick={onLogout} style={{
+              background: 'none',
+              border: `2px solid ${COLORS.green}`,
+              color: COLORS.green,
+              padding: '6px 12px',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              fontSize: '16px',
+            }}>
+              Salir
+            </button>
+          </div>
         </div>
-        <button onClick={onLogout} style={{
-          background: 'none',
-          border: `2px solid ${COLORS.green}`,
-          color: COLORS.green,
-          padding: '6px 12px',
-          borderRadius: '8px',
-          cursor: 'pointer',
-          fontSize: '16px',
-        }}>
-          Salir
-        </button>
-      </div>
 
       <div style={styles.deviceCard}>
         <div style={styles.deviceName}>{dispositivoActual?.nombre || 'Cargando...'}</div>
@@ -525,16 +541,149 @@ function DeviceScreen({ onLogout }) {
   );
 }
 
+function AdminScreen({ onBack }) {
+  const [usuarios, setUsuarios] = useState([]);
+  const [dispositivos, setDispositivos] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    cargarDatos();
+  }, []);
+
+  const cargarDatos = async () => {
+    try {
+      const session = await fetchAuthSession({ forceRefresh: true });
+      const creds = session.credentials;
+
+      const dynamoClient = new DynamoDBClient({
+        region: 'us-east-1',
+        credentials: creds,
+      });
+      const docClient = DynamoDBDocumentClient.from(dynamoClient);
+
+      // Cargar todos los usuarios
+      const usuariosResult = await docClient.send(new ScanCommand({
+        TableName: 'yuma-usuarios',
+      }));
+      setUsuarios(usuariosResult.Items || []);
+
+      // Cargar todos los dispositivos
+      const dispositivosResult = await docClient.send(new ScanCommand({
+        TableName: 'yuma-dispositivos',
+      }));
+      setDispositivos(dispositivosResult.Items || []);
+
+    } catch (err) {
+      console.error('Error cargando datos admin:', err);
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div style={styles.app}>
+      <div style={styles.header}>
+        <div>
+          <div style={styles.logo}>YUMA IoT</div>
+          <div style={styles.subtitle}>Panel Admin</div>
+        </div>
+        <button onClick={onBack} style={{
+          background: 'none',
+          border: `2px solid ${COLORS.green}`,
+          color: COLORS.green,
+          padding: '6px 12px',
+          borderRadius: '8px',
+          cursor: 'pointer',
+          fontSize: '13px',
+          fontWeight: 'bold',
+        }}>
+          Volver
+        </button>
+      </div>
+
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: '40px', color: COLORS.green }}>
+          Cargando...
+        </div>
+      ) : (
+        <div style={{ padding: '16px' }}>
+
+          {/* Resumen */}
+          <div style={{ display: 'flex', gap: '12px', marginBottom: '20px' }}>
+            <div style={{ ...styles.deviceCard, flex: 1, textAlign: 'center', padding: '16px' }}>
+              <div style={{ fontSize: '32px', fontWeight: 'bold', color: COLORS.green }}>{usuarios.length}</div>
+              <div style={{ color: COLORS.darkGray, fontSize: '14px' }}>Usuarios</div>
+            </div>
+            <div style={{ ...styles.deviceCard, flex: 1, textAlign: 'center', padding: '16px' }}>
+              <div style={{ fontSize: '32px', fontWeight: 'bold', color: COLORS.green }}>{dispositivos.length}</div>
+              <div style={{ color: COLORS.darkGray, fontSize: '14px' }}>Dispositivos</div>
+            </div>
+          </div>
+
+          {/* Lista de usuarios */}
+          <div style={styles.deviceCard}>
+            <div style={{ ...styles.deviceName, marginBottom: '12px' }}>👥 Usuarios</div>
+            {usuarios.map((u) => (
+              <div key={u.email} style={styles.infoRow}>
+                <div>
+                  <div style={{ color: COLORS.white, fontWeight: 'bold', fontSize: '14px' }}>{u.nombre}</div>
+                  <div style={{ color: COLORS.darkGray, fontSize: '12px' }}>{u.email}</div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ 
+                    color: u.rol === 'admin' ? COLORS.green : COLORS.white,
+                    fontSize: '12px',
+                    fontWeight: 'bold'
+                  }}>{u.rol}</div>
+                  <div style={{ color: COLORS.darkGray, fontSize: '12px' }}>
+                    {u.dispositivos?.length || 0} dispositivo(s)
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Lista de dispositivos */}
+          <div style={{ ...styles.deviceCard, marginTop: '16px' }}>
+            <div style={{ ...styles.deviceName, marginBottom: '12px' }}>📱 Dispositivos</div>
+            {dispositivos.map((d) => (
+              <div key={d.deviceId} style={styles.infoRow}>
+                <div>
+                  <div style={{ color: COLORS.white, fontWeight: 'bold', fontSize: '14px' }}>{d.nombre}</div>
+                  <div style={{ color: COLORS.darkGray, fontSize: '12px' }}>{d.deviceId}</div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ color: COLORS.darkGray, fontSize: '12px' }}>{d.propietario}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+        </div>
+      )}
+    </div>
+  );
+}
+
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false);
 
   useEffect(() => { checkAuth(); }, []);
+  
 
   const checkAuth = async () => {
     try {
       await getCurrentUser();
       setIsAuthenticated(true);
+      
+      const session = await fetchAuthSession();
+      console.log('Token payload:', session.tokens?.accessToken?.payload);
+      const groups = session.tokens?.accessToken?.payload?.['cognito:groups'] || [];
+      console.log('Grupos:', groups);
+      setIsAdmin(groups.includes('admins'));
+      
     } catch {
       setIsAuthenticated(false);
     }
@@ -555,7 +704,13 @@ function App() {
   return (
     <div style={styles.app}>
       {isAuthenticated
-        ? <DeviceScreen onLogout={handleLogout} />
+        ? showAdmin
+          ? <AdminScreen onBack={() => setShowAdmin(false)} />
+          : <DeviceScreen 
+              onLogout={handleLogout} 
+              isAdmin={isAdmin}
+              onAdmin={() => setShowAdmin(true)}
+            />
         : <LoginScreen onLogin={() => setIsAuthenticated(true)} />
       }
     </div>
