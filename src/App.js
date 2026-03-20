@@ -5,6 +5,10 @@ import { PubSub } from '@aws-amplify/pubsub';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { fetchAuthSession } from 'aws-amplify/auth';
+
 
 // Fix para el icono de Leaflet
 delete L.Icon.Default.prototype._getIconUrl;
@@ -258,6 +262,8 @@ function DeviceScreen({ onLogout }) {
   const [time, setTime] = useState(new Date());
   const [location, setLocation] = useState({ lat: null, lon: null });
   const clientRef = useRef(null);
+  const [dispositivos, setDispositivos] = useState([]);
+  const [dispositivoActual, setDispositivoActual] = useState(null);
 
   useEffect(() => {
     const timer = setInterval(() => setTime(new Date()), 1000);
@@ -265,6 +271,11 @@ function DeviceScreen({ onLogout }) {
   }, []);
 
   useEffect(() => {
+    cargarDispositivos();
+  }, []);
+
+  useEffect(() => {
+    if (!dispositivoActual) return;
     connectIoT();
     return () => {
       if (clientRef.current?.subscription) clientRef.current.subscription.unsubscribe();
@@ -272,7 +283,57 @@ function DeviceScreen({ onLogout }) {
       if (clientRef.current?.subShadow) clientRef.current.subShadow.unsubscribe();
       if (clientRef.current?.subShadowUpdate) clientRef.current.subShadowUpdate.unsubscribe();
     };
-  }, []);
+  }, [dispositivoActual]);
+
+  const cargarDispositivos = async () => {
+    try {
+      console.log('Cargando dispositivos...');
+      const session = await fetchAuthSession({ forceRefresh: true });
+      console.log('Credenciales:', session.credentials);
+      const creds = session.credentials;
+      
+      if (!creds) {
+        console.error('No hay credenciales');
+        return;
+      }
+
+      const dynamoClient = new DynamoDBClient({
+        region: 'us-east-1',
+        credentials: creds,
+      });
+      const docClient = DynamoDBDocumentClient.from(dynamoClient);
+
+      const { username } = await getCurrentUser();
+      const session2 = await fetchAuthSession();
+      const email = session2.tokens?.idToken?.payload?.email;
+      console.log('Email:', email);
+      
+      
+      const userResult = await docClient.send(new GetCommand({
+        TableName: 'yuma-usuarios',
+        Key: { email: email },
+      }));
+
+      console.log('Usuario:', userResult.Item);
+
+      if (userResult.Item) {
+        const deviceIds = userResult.Item.dispositivos;
+        const devs = [];
+        for (const deviceId of deviceIds) {
+          const devResult = await docClient.send(new GetCommand({
+            TableName: 'yuma-dispositivos',
+            Key: { deviceId },
+          }));
+          if (devResult.Item) devs.push(devResult.Item);
+        }
+        setDispositivos(devs);
+        if (devs.length > 0) setDispositivoActual(devs[0]);
+        console.log('Dispositivos cargados:', devs);
+      }
+    } catch (err) {
+      console.error('Error cargando dispositivos:', err);
+    }
+  };
 
   const connectIoT = async () => {
     try {
@@ -283,7 +344,7 @@ function DeviceScreen({ onLogout }) {
 
       // Suscribirse al Shadow get/accepted para obtener estado inicial
       const subShadow = pubsub.subscribe({ 
-        topics: `$aws/things/${IoTConfig.thingName}/shadow/get/accepted` 
+        topics: `$aws/things/${dispositivoActual.thingName}/shadow/get/accepted` 
       }).subscribe({
         next: (data) => {
           console.log('Shadow recibido:', data);
@@ -301,7 +362,7 @@ function DeviceScreen({ onLogout }) {
       });
 
       const subShadowUpdate = pubsub.subscribe({ 
-    	  topics: `$aws/things/${IoTConfig.thingName}/shadow/update/accepted` 
+    	  topics: `$aws/things/${dispositivoActual.thingName}/shadow/update/accepted` 
 }).subscribe({
     	  next: (data) => {
               console.log('Shadow UPDATE recibido:', JSON.stringify(data));
@@ -314,7 +375,7 @@ function DeviceScreen({ onLogout }) {
     	  error: (err) => console.error('Shadow update error:', err),
       });
 
-      const subscription = pubsub.subscribe({ topics: IoTConfig.topicStatus }).subscribe({
+      const subscription = pubsub.subscribe({ topics: dispositivoActual.topicStatus }).subscribe({
         next: (data) => {
           console.log('Mensaje recibido:', data);
           if (data.rele !== undefined) setRelayOn(data.rele === 1);
@@ -326,7 +387,7 @@ function DeviceScreen({ onLogout }) {
         },
       });
 
-      const subConexion = pubsub.subscribe({ topics: 'finca/rele/conexion' }).subscribe({
+      const subConexion = pubsub.subscribe({ topics: dispositivoActual.topicConexion }).subscribe({
   	next: async (data) => {
     	  console.log('Estado conexion:', data);
     	  const isConnected = data.c === 1;
@@ -335,7 +396,7 @@ function DeviceScreen({ onLogout }) {
     	  // Actualizar Shadow desde la PWA
     	  try {
             await clientRef.current.pubsub.publish({
-              topics: `$aws/things/${IoTConfig.thingName}/shadow/update`,
+              topics: `$aws/things/${dispositivoActual.thingName}/shadow/update`,
               message: { state: { reported: { connected: isConnected } } },
       	    });
       	    console.log('Shadow actualizado:', isConnected);
@@ -353,7 +414,7 @@ function DeviceScreen({ onLogout }) {
       // Solicitar estado actual del Shadow
       setTimeout(async () => {
         await clientRef.current.pubsub.publish({
-          topics: `$aws/things/${IoTConfig.thingName}/shadow/get`,
+          topics: `$aws/things/${dispositivoActual.thingName}/shadow/get`,
           message: {},
         });
         console.log('Shadow solicitado');
@@ -372,7 +433,7 @@ function DeviceScreen({ onLogout }) {
     try {
       if (clientRef.current?.pubsub) {
         await clientRef.current.pubsub.publish({
-          topics: IoTConfig.topicControl,
+          topics: dispositivoActual.topicControl,
           message: { rele: newState ? 1 : 0 },
         });
         console.log('Comando enviado:', newState ? 'ON' : 'OFF');
@@ -414,7 +475,7 @@ function DeviceScreen({ onLogout }) {
       </div>
 
       <div style={styles.deviceCard}>
-        <div style={styles.deviceName}>Alarma Finca</div>
+        <div style={styles.deviceName}>{dispositivoActual?.nombre || 'Cargando...'}</div>
 
         <div style={styles.infoRow}>
           <span style={styles.label}>Estado</span>
