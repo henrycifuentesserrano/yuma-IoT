@@ -1,4 +1,4 @@
-# YUMA Connect — PWA IoT
+# YUMA IoT — PWA IoT
 
 Aplicación web progresiva (PWA) para control y monitoreo de dispositivos IoT desarrollada con React y AWS.
 
@@ -54,7 +54,7 @@ Desarrollada para trabajar con dispositivos ESP32 conectados a AWS IoT Core via 
 
 ## Instalación
 ```bash
-git clone https://github.com/henrycifuentesserrano/yuma-connect.git
+git clone https://github.com/henrycifuentesserrano/yuma-IoT.git
 cd yuma-connect
 npm install
 ```
