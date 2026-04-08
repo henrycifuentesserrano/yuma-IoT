@@ -340,6 +340,33 @@ function DeviceScreen({ onLogout, isAdmin, onAdmin }) {
         if (devs.length > 0) setDispositivoActual(devs[0]);
         console.log('Dispositivos cargados:', devs);
       }
+      // Guardar Identity ID en DynamoDB y asociar política IoT
+      const identityId = session.identityId;
+      const email2 = session2.tokens?.idToken?.payload?.email;
+      if (identityId && email2) {
+        await docClient.send(new UpdateCommand({
+          TableName: 'yuma-usuarios',
+          Key: { email: email2 },
+          UpdateExpression: 'SET identityId = :id',
+          ExpressionAttributeValues: {
+            ':id': identityId,
+          },
+        }));
+        console.log('Identity ID guardado:', identityId);
+
+        // Asociar política IoT automáticamente
+        try {
+          await fetch(`${process.env.REACT_APP_API_URL}/iot-policy`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ identityId }),
+          });
+          console.log('Política IoT asociada automáticamente');
+        } catch (err) {
+          console.error('Error asociando política IoT:', err);
+        }
+      }
+
     } catch (err) {
       console.error('Error cargando dispositivos:', err);
     }
