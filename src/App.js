@@ -6,7 +6,7 @@ import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, ScanCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { fetchAuthSession } from 'aws-amplify/auth';
 
 
@@ -264,6 +264,7 @@ function DeviceScreen({ onLogout, isAdmin, onAdmin }) {
   const clientRef = useRef(null);
   const [dispositivos, setDispositivos] = useState([]);
   const [dispositivoActual, setDispositivoActual] = useState(null);
+  const [cargandoDispositivos, setCargandoDispositivos] = useState(true);
 
   useEffect(() => {
     const timer = setInterval(() => setTime(new Date()), 1000);
@@ -276,7 +277,16 @@ function DeviceScreen({ onLogout, isAdmin, onAdmin }) {
 
   useEffect(() => {
     if (!dispositivoActual) return;
+    
+    // Limpiar conexión anterior si existe
+    if (clientRef.current?.subscription) clientRef.current.subscription.unsubscribe();
+    if (clientRef.current?.subConexion) clientRef.current.subConexion.unsubscribe();
+    if (clientRef.current?.subShadow) clientRef.current.subShadow.unsubscribe();
+    if (clientRef.current?.subShadowUpdate) clientRef.current.subShadowUpdate.unsubscribe();
+    clientRef.current = null;
+    
     connectIoT();
+    
     return () => {
       if (clientRef.current?.subscription) clientRef.current.subscription.unsubscribe();
       if (clientRef.current?.subConexion) clientRef.current.subConexion.unsubscribe();
@@ -333,10 +343,13 @@ function DeviceScreen({ onLogout, isAdmin, onAdmin }) {
     } catch (err) {
       console.error('Error cargando dispositivos:', err);
     }
+    setCargandoDispositivos(false);
   };
 
   const connectIoT = async () => {
     try {
+      const sessionTemp = await fetchAuthSession({ forceRefresh: true });
+      console.log('IdentityId:', sessionTemp.identityId);
       const pubsub = new PubSub({
         region: IoTConfig.region,
         endpoint: `wss://${IoTConfig.endpoint}/mqtt`,
@@ -444,6 +457,47 @@ function DeviceScreen({ onLogout, isAdmin, onAdmin }) {
     }
   };
 
+if (cargandoDispositivos) {
+    return (
+      <div style={{ ...styles.app, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ color: COLORS.green, fontSize: '18px' }}>Cargando...</div>
+      </div>
+    );
+  }
+
+if (!dispositivoActual) {
+    return (
+      <div style={styles.app}>
+        <div style={styles.header}>
+          <div>
+            <div style={styles.logo}>YUMA IoT</div>
+            <div style={styles.subtitle}>Intelligent Systems Flow</div>
+          </div>
+          <button onClick={onLogout} style={{
+            background: 'none',
+            border: `2px solid ${COLORS.green}`,
+            color: COLORS.green,
+            padding: '6px 12px',
+            borderRadius: '8px',
+            cursor: 'pointer',
+            fontSize: '16px',
+          }}>
+            Salir
+          </button>
+        </div>
+        <div style={{ textAlign: 'center', padding: '60px 20px' }}>
+          <div style={{ fontSize: '48px', marginBottom: '16px' }}>📱</div>
+          <div style={{ color: COLORS.white, fontSize: '18px', fontWeight: 'bold', marginBottom: '8px' }}>
+            No tienes dispositivos asignados
+          </div>
+          <div style={{ color: COLORS.darkGray, fontSize: '14px' }}>
+            Contacta al administrador para que te asigne un dispositivo.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const formatTime = (date) => date.toLocaleTimeString('es-CO', {
     hour: '2-digit', minute: '2-digit', second: '2-digit',
     timeZone: 'America/Bogota'
@@ -545,6 +599,17 @@ function AdminScreen({ onBack }) {
   const [usuarios, setUsuarios] = useState([]);
   const [dispositivos, setDispositivos] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [showAddUser, setShowAddUser] = useState(false);
+  const [newUser, setNewUser] = useState({ nombre: '', email: '', password: '', rol: 'cliente' });
+  const [savingUser, setSavingUser] = useState(false);
+  const [errorUser, setErrorUser] = useState('');
+  const [showAddDevice, setShowAddDevice] = useState(false);
+  const [newDevice, setNewDevice] = useState({ nombre: '', deviceId: '', propietario: '' });
+  const [savingDevice, setSavingDevice] = useState(false);
+  const [errorDevice, setErrorDevice] = useState('');
+  const [showAssignDevice, setShowAssignDevice] = useState(null);
+  const [selectedDevice, setSelectedDevice] = useState('');
+  const [savingAssign, setSavingAssign] = useState(false);
 
   useEffect(() => {
     cargarDatos();
@@ -577,6 +642,106 @@ function AdminScreen({ onBack }) {
       console.error('Error cargando datos admin:', err);
     }
     setLoading(false);
+  };
+
+  const crearUsuario = async () => {
+    setSavingUser(true);
+    setErrorUser('');
+    try {
+      const response = await fetch(`${process.env.REACT_APP_API_URL}/usuarios`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newUser),
+      });
+      const data = await response.json();
+      if (response.ok) {
+        setShowAddUser(false);
+        setNewUser({ nombre: '', email: '', password: '', rol: 'cliente' });
+        cargarDatos();
+        console.log('Usuario creado:', data);
+      } else {
+        setErrorUser(data.error || 'Error al crear usuario');
+      }
+    } catch (err) {
+      console.error('Error:', err);
+      setErrorUser('Error de conexión');
+    }
+    setSavingUser(false);
+  };
+
+  const crearDispositivo = async () => {
+    setSavingDevice(true);
+    setErrorDevice('');
+    try {
+      const session = await fetchAuthSession({ forceRefresh: true });
+      const creds = session.credentials;
+
+      const dynamoClient = new DynamoDBClient({
+        region: 'us-east-1',
+        credentials: creds,
+      });
+      const docClient = DynamoDBDocumentClient.from(dynamoClient);
+
+      await docClient.send(new PutCommand({
+        TableName: 'yuma-dispositivos',
+        Item: {
+          deviceId: newDevice.deviceId,
+          nombre: newDevice.nombre,
+          propietario: newDevice.propietario,
+          topicControl: `${newDevice.deviceId}/rele/control`,
+          topicStatus: `${newDevice.deviceId}/rele/status`,
+          topicConexion: `${newDevice.deviceId}/rele/conexion`,
+          thingName: newDevice.deviceId,
+          activo: true,
+        },
+      }));
+
+      setShowAddDevice(false);
+      setNewDevice({ nombre: '', deviceId: '', propietario: '' });
+      cargarDatos();
+      console.log('Dispositivo creado');
+    } catch (err) {
+      console.error('Error:', err);
+      setErrorDevice('Error al crear dispositivo');
+    }
+    setSavingDevice(false);
+  };
+
+  const asignarDispositivo = async (emailUsuario) => {
+    setSavingAssign(true);
+    try {
+      console.log('Asignando dispositivo:', selectedDevice, 'a usuario:', emailUsuario);
+      const session = await fetchAuthSession({ forceRefresh: true });
+      const creds = session.credentials;
+      console.log('Credenciales:', creds ? 'OK' : 'NO');
+
+      const dynamoClient = new DynamoDBClient({
+        region: 'us-east-1',
+        credentials: creds,
+      });
+      const docClient = DynamoDBDocumentClient.from(dynamoClient);
+
+      const usuario = usuarios.find(u => u.email === emailUsuario);
+      const dispositivosActuales = usuario.dispositivos || [];
+      
+      if (!dispositivosActuales.includes(selectedDevice)) {
+        await docClient.send(new UpdateCommand({
+          TableName: 'yuma-usuarios',
+          Key: { email: emailUsuario },
+          UpdateExpression: 'SET dispositivos = :devs',
+          ExpressionAttributeValues: {
+            ':devs': [...dispositivosActuales, selectedDevice],
+          },
+        }));
+        setShowAssignDevice(null);
+        setSelectedDevice('');
+        cargarDatos();
+        console.log('Dispositivo asignado');
+      }
+    } catch (err) {
+      console.error('Error asignando dispositivo:', err);
+    }
+    setSavingAssign(false);
   };
 
   return (
@@ -618,29 +783,180 @@ function AdminScreen({ onBack }) {
               <div style={{ color: COLORS.darkGray, fontSize: '14px' }}>Dispositivos</div>
             </div>
           </div>
+	  
+	  {/* Botón agregar usuario */}
+	  <button 
+  	    onClick={() => setShowAddUser(!showAddUser)}
+            style={{
+    	      width: '100%',
+              padding: '12px',
+              borderRadius: '8px',
+              border: 'none',
+              backgroundColor: COLORS.green,
+              color: COLORS.white,
+              fontSize: '16px',
+              fontWeight: 'bold',
+              cursor: 'pointer',
+              marginBottom: '16px',
+            }}>
+            {showAddUser ? 'Cancelar' : '+ Agregar Usuario'}
+          </button>
+
+          {/* Formulario agregar usuario */}
+          {showAddUser && (
+            <div style={{ ...styles.deviceCard, marginBottom: '16px' }}>
+              <div style={{ ...styles.deviceName, marginBottom: '12px' }}>Nuevo Usuario</div>
+              <input
+                style={styles.input}
+                placeholder="Nombre completo"
+                value={newUser.nombre}
+                onChange={e => setNewUser({ ...newUser, nombre: e.target.value })}
+              />
+              <input
+                style={styles.input}
+                placeholder="Correo electrónico"
+                type="email"
+                value={newUser.email}
+                onChange={e => setNewUser({ ...newUser, email: e.target.value })}
+              />
+              <input
+                style={styles.input}
+                placeholder="Contraseña temporal"
+                type="password"
+                value={newUser.password}
+                onChange={e => setNewUser({ ...newUser, password: e.target.value })}
+              />
+              <select
+                style={{ ...styles.input, marginBottom: '12px' }}
+                value={newUser.rol}
+                onChange={e => setNewUser({ ...newUser, rol: e.target.value })}
+              > 
+                <option value="cliente">Cliente</option>
+                <option value="admin">Admin</option>
+              </select>
+              {errorUser && <div style={styles.errorText}>{errorUser}</div>}
+              <button
+                style={{ ...styles.button, marginTop: '8px' }}
+                onClick={crearUsuario}
+                disabled={savingUser}
+              >
+                {savingUser ? 'Creando...' : 'Crear Usuario'}
+              </button>
+            </div>
+          )}
+          
 
           {/* Lista de usuarios */}
           <div style={styles.deviceCard}>
             <div style={{ ...styles.deviceName, marginBottom: '12px' }}>👥 Usuarios</div>
             {usuarios.map((u) => (
-              <div key={u.email} style={styles.infoRow}>
-                <div>
-                  <div style={{ color: COLORS.white, fontWeight: 'bold', fontSize: '14px' }}>{u.nombre}</div>
-                  <div style={{ color: COLORS.darkGray, fontSize: '12px' }}>{u.email}</div>
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ 
-                    color: u.rol === 'admin' ? COLORS.green : COLORS.white,
-                    fontSize: '12px',
-                    fontWeight: 'bold'
-                  }}>{u.rol}</div>
-                  <div style={{ color: COLORS.darkGray, fontSize: '12px' }}>
-                    {u.dispositivos?.length || 0} dispositivo(s)
+  	      <div key={u.email}>
+                <div style={styles.infoRow}>
+		  <div>
+		    <div style={{ color: COLORS.white, fontWeight: 'bold', fontSize: '14px' }}>{u.nombre}</div>
+        	    <div style={{ color: COLORS.darkGray, fontSize: '12px' }}>{u.email}</div>
+ 		  </div>
+		  <div style={{ textAlign: 'right' }}>
+		    <div style={{
+		      color: u.rol === 'admin' ? COLORS.green : COLORS.white,
+          	      fontSize: '12px',
+          	      fontWeight: 'bold'
+		    }}>{u.rol}</div>
+		    <div style={{ color: COLORS.darkGray, fontSize: '12px' }}>
+		      {u.dispositivos?.length || 0} dispositivo(s)
+		    </div>
+        	    <button
+		      onClick={() => setShowAssignDevice(showAssignDevice === u.email ? null : u.email)}
+                      style={{
+			background: 'none',
+                        border: `1px solid ${COLORS.green}`,
+                        color: COLORS.green,
+                        padding: '3px 8px',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '11px',
+                        marginTop: '4px',
+		      }}>
+		      + Asignar
+		    </button>
                   </div>
                 </div>
+                {showAssignDevice === u.email && (
+                  <div style={{ padding: '8px 0', borderBottom: `1px solid ${COLORS.darkBlue}` }}>
+                    <select
+                      style={{ ...styles.input, marginBottom: '8px' }}
+                      value={selectedDevice}
+                      onChange={e => setSelectedDevice(e.target.value)}
+                    >
+		      <option value="">Seleccionar dispositivo</option>
+                      {dispositivos.map(d => (
+		        <option key={d.deviceId} value={d.deviceId}>{d.nombre}</option>
+  		      ))}
+		    </select>
+		    <button
+		      style={{ ...styles.button, padding: '8px' }}
+                      onClick={() => asignarDispositivo(u.email)}
+                      disabled={savingAssign || !selectedDevice}
+	            >
+		      {savingAssign ? 'Asignando...' : 'Confirmar'}
+                    </button>
+                  </div>
+                )}
               </div>
             ))}
           </div>
+
+	  {/* Botón agregar dispositivo */}
+	  <button
+	    onClick={() => setShowAddDevice(!showAddDevice)}
+	    style={{
+	      width: '100%',
+	      padding: '12px',
+    	      borderRadius: '8px',
+    	      border: 'none',
+    	      backgroundColor: COLORS.blue,
+    	      color: COLORS.white,
+    	      fontSize: '16px',
+    	      fontWeight: 'bold',
+    	      cursor: 'pointer',
+    	      marginBottom: '16px',
+    	      border: `2px solid ${COLORS.green}`,
+            }}>
+            {showAddDevice ? 'Cancelar' : '+ Agregar Dispositivo'}
+          </button>
+
+	  {/* Formulario agregar dispositivo */}
+	  {showAddDevice && (
+	    <div style={{ ...styles.deviceCard, marginBottom: '16px' }}>
+	      <div style={{ ...styles.deviceName, marginBottom: '12px' }}>Nuevo Dispositivo</div>
+              <input
+	        style={styles.input}
+      	        placeholder="Nombre del dispositivo"
+                value={newDevice.nombre}
+                onChange={e => setNewDevice({ ...newDevice, nombre: e.target.value })}
+              />
+	      <input
+      	        style={styles.input}
+      		placeholder="ID del dispositivo (ej: esp32-rele-finca2)"
+      		value={newDevice.deviceId}
+      		onChange={e => setNewDevice({ ...newDevice, deviceId: e.target.value })}
+    	      />
+	      <input
+      		style={styles.input}
+      		placeholder="Email del propietario"
+      		value={newDevice.propietario}
+      		onChange={e => setNewDevice({ ...newDevice, propietario: e.target.value })}
+    	      />
+	      {errorDevice && <div style={styles.errorText}>{errorDevice}</div>}
+    	      <button
+      		style={{ ...styles.button, marginTop: '8px' }}
+      		onClick={crearDispositivo}
+      		disabled={savingDevice}
+    	      >
+		{savingDevice ? 'Guardando...' : 'Crear Dispositivo'}
+   	      </button>
+	    </div>
+	  )}
 
           {/* Lista de dispositivos */}
           <div style={{ ...styles.deviceCard, marginTop: '16px' }}>
@@ -684,7 +1000,8 @@ function App() {
       console.log('Grupos:', groups);
       setIsAdmin(groups.includes('admins'));
       
-    } catch {
+    } catch (err) {
+      console.error('checkAuth error:', err);
       setIsAuthenticated(false);
     }
     setLoading(false);
