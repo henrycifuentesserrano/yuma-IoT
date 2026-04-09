@@ -637,6 +637,8 @@ function AdminScreen({ onBack }) {
   const [showAssignDevice, setShowAssignDevice] = useState(null);
   const [selectedDevice, setSelectedDevice] = useState('');
   const [savingAssign, setSavingAssign] = useState(false);
+  const [deletingUser, setDeletingUser] = useState(null);
+  const [deletingDevice, setDeletingDevice] = useState(null);
 
   useEffect(() => {
     cargarDatos();
@@ -702,7 +704,6 @@ function AdminScreen({ onBack }) {
     try {
       const session = await fetchAuthSession({ forceRefresh: true });
       const creds = session.credentials;
-
       const dynamoClient = new DynamoDBClient({
         region: 'us-east-1',
         credentials: creds,
@@ -722,6 +723,25 @@ function AdminScreen({ onBack }) {
           activo: true,
         },
       }));
+
+      // Si tiene propietario, asignarlo automáticamente al usuario
+      if (newDevice.propietario) {
+        const usuarioPropietario = usuarios.find(u => u.email === newDevice.propietario);
+        if (usuarioPropietario) {
+          const dispositivosActuales = usuarioPropietario.dispositivos || [];
+          if (!dispositivosActuales.includes(newDevice.deviceId)) {
+            await docClient.send(new UpdateCommand({
+              TableName: 'yuma-usuarios',
+              Key: { email: newDevice.propietario },
+              UpdateExpression: 'SET dispositivos = :devs',
+              ExpressionAttributeValues: {
+                ':devs': [...dispositivosActuales, newDevice.deviceId],
+              },
+            }));
+            console.log('Dispositivo asignado automáticamente a:', newDevice.propietario);
+          }
+        }
+      }
 
       setShowAddDevice(false);
       setNewDevice({ nombre: '', deviceId: '', propietario: '' });
@@ -769,6 +789,63 @@ function AdminScreen({ onBack }) {
       console.error('Error asignando dispositivo:', err);
     }
     setSavingAssign(false);
+  };
+  
+  const eliminarUsuario = async (email) => {
+    if (!window.confirm(`¿Eliminar usuario ${email}?`)) return;
+    setDeletingUser(email);
+    try {
+      const response = await fetch(`${process.env.REACT_APP_API_URL}/usuarios?email=${encodeURIComponent(email)}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (response.ok) {
+        cargarDatos();
+        console.log('Usuario eliminado:', email);
+      }
+    } catch (err) {
+      console.error('Error eliminando usuario:', err);
+    }
+    setDeletingUser(null);
+  };
+
+  const eliminarDispositivo = async (deviceId) => {
+    if (!window.confirm(`¿Eliminar dispositivo ${deviceId}?`)) return;
+    setDeletingDevice(deviceId);
+    try {
+      const session = await fetchAuthSession({ forceRefresh: true });
+      const creds = session.credentials;
+      const dynamoClient = new DynamoDBClient({ region: 'us-east-1', credentials: creds });
+      const docClient = DynamoDBDocumentClient.from(dynamoClient);
+      
+      // Eliminar dispositivo de DynamoDB
+      const { DeleteCommand } = await import('@aws-sdk/lib-dynamodb');
+      await docClient.send(new DeleteCommand({
+        TableName: 'yuma-dispositivos',
+        Key: { deviceId },
+      }));
+
+      // Remover dispositivo de todos los usuarios que lo tienen
+      for (const usuario of usuarios) {
+        if (usuario.dispositivos?.includes(deviceId)) {
+          await docClient.send(new UpdateCommand({
+            TableName: 'yuma-usuarios',
+            Key: { email: usuario.email },
+            UpdateExpression: 'SET dispositivos = :devs',
+            ExpressionAttributeValues: {
+              ':devs': usuario.dispositivos.filter(d => d !== deviceId),
+            },
+          }));
+          console.log('Dispositivo removido del usuario:', usuario.email);
+        }
+      }
+
+      cargarDatos();
+      console.log('Dispositivo eliminado:', deviceId);
+    } catch (err) {
+      console.error('Error eliminando dispositivo:', err);
+    }
+    setDeletingDevice(null);
   };
 
   return (
@@ -906,6 +983,22 @@ function AdminScreen({ onBack }) {
 		      }}>
 		      + Asignar
 		    </button>
+		    <button
+                      onClick={() => eliminarUsuario(u.email)}
+                      disabled={deletingUser === u.email}
+                      style={{
+                        background: 'none',
+                        border: `1px solid ${COLORS.red}`,
+                        color: COLORS.red,
+                        padding: '3px 8px',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '11px',
+                        marginTop: '4px',
+                        marginLeft: '4px',
+                       }}>
+                       {deletingUser === u.email ? '...' : 'Eliminar'}
+                    </button>
                   </div>
                 </div>
                 {showAssignDevice === u.email && (
@@ -996,7 +1089,22 @@ function AdminScreen({ onBack }) {
                 </div>
                 <div style={{ textAlign: 'right' }}>
                   <div style={{ color: COLORS.darkGray, fontSize: '12px' }}>{d.propietario}</div>
-                </div>
+                  <button
+                    onClick={() => eliminarDispositivo(d.deviceId)}
+                    disabled={deletingDevice === d.deviceId}
+                    style={{
+                      background: 'none',
+                      border: `1px solid ${COLORS.red}`,
+                      color: COLORS.red,
+                      padding: '3px 8px',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontSize: '11px',
+                      marginTop: '4px',
+                    }}>
+                    {deletingDevice === d.deviceId ? '...' : 'Eliminar'}
+                  </button>
+		</div>
               </div>
             ))}
           </div>
